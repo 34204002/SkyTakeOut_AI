@@ -137,6 +137,22 @@
             GROUP BY date
             ORDER BY date
     </select>
+    <update id="cancelOrderIfPending">
+        UPDATE sky_take_out.orders
+        SET status = 6,
+            cancel_reason = '支付超时',
+            cancel_time = NOW()
+        WHERE id = #{id} AND status = 1
+    </update>
+
+    <update id="payOrderIfPending" parameterType="com.sky.entity.Orders">
+        UPDATE sky_take_out.orders
+        SET status = #{status},
+            pay_status = #{payStatus},
+            checkout_time = #{checkoutTime}
+        WHERE id = #{id} AND status = 1
+    </update>
+
     <select id="getIdByStatusAndOrderTimeBetween" resultType="java.lang.Integer">
         SELECT id FROM sky_take_out.orders WHERE status = #{completed} AND DATE_FORMAT(order_time,'%Y-%m-%d') BETWEEN #{begin} AND #{end}
     </select>

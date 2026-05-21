@@ -18,8 +18,10 @@ import com.sky.vo.OrderPaymentVO;
 import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
 import com.sky.vo.OrderVO;
+import com.sky.config.RabbitMQConfig;
 import com.sky.websocket.WebSocketServer;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -52,6 +54,9 @@ public class OrderServiceImpl implements OrderService {
     
     @Autowired
     private AiAsyncService aiAsyncService;
+
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
 
     /**
      * @param ordersSubmitDTO
@@ -89,7 +94,10 @@ public class OrderServiceImpl implements OrderService {
         orders.setNumber(generateOrderNumber());
         orders.setUserName(userMapper.getById(orders.getUserId()).getName());
         orderMapper.insert(orders);
-        
+
+        // 发送延时消息，15 分钟后检查订单是否超时未支付
+        rabbitTemplate.convertAndSend(RabbitMQConfig.DELAY_EXCHANGE, RabbitMQConfig.DELAY_ROUTING_KEY, orders.getId());
+
         // 【新增】异步触发 AI 备注解析
         if (ordersSubmitDTO.getRemark() != null && !ordersSubmitDTO.getRemark().isEmpty()) {
             // 调用异步服务解析订单备注
@@ -173,7 +181,10 @@ public class OrderServiceImpl implements OrderService {
         webSocketServer.sendToAllClient(jsonString);
 
 
-        orderMapper.update(orders);
+        int affected = orderMapper.payOrderIfPending(orders);
+        if (affected == 0) {
+            log.warn("支付成功但订单已超时取消，不回写状态，orderId={}", ordersDB.getId());
+        }
     }
 
     /**

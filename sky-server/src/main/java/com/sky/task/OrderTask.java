@@ -1,6 +1,5 @@
 package com.sky.task;
 
-import com.sky.dto.OrdersCancelDTO;
 import com.sky.entity.Orders;
 import com.sky.mapper.OrderMapper;
 import com.sky.service.OrderService;
@@ -19,23 +18,6 @@ public class OrderTask {
     @Autowired
     private OrderMapper orderMapper;
 
-    /**
-     * 处理超时订单(超过15分钟未付款)
-     */
-    @Scheduled(cron = "0 * * * * ?")
-    public void processTimeoutOrders() {
-        log.info("处理超时订单");
-        List<Orders> ordersList=orderMapper.getByStatusAndOrderTimeOut(Orders.PENDING_PAYMENT, LocalDateTime.now().plusMinutes(-15));
-        if (ordersList != null && !ordersList.isEmpty()) {
-            log.info("超时订单：{}", ordersList);
-            ordersList.forEach(orders -> {
-                orders.setStatus(Orders.CANCELLED);
-                orders.setCancelReason("支付超时");
-                orders.setCancelTime(LocalDateTime.now());
-                orderService.update(orders);
-            });
-        }
-    }
     /**
      * 处理一直处于派送中的订单
      */

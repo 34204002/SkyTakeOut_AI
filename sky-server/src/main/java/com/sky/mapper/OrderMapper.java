@@ -42,4 +42,16 @@ public interface OrderMapper {
     List<OrdersReport> getOrdersStatistics(LocalDate begin, LocalDate end);
 
     List<Integer> getIdByStatusAndOrderTimeBetween(Integer completed, LocalDate begin, LocalDate end);
+
+    /**
+     * 超时取消订单（带状态约束，仅取消 status=1 的订单）
+     * @return 影响行数（0 表示订单已支付或已取消）
+     */
+    int cancelOrderIfPending(Long id);
+
+    /**
+     * 支付成功更新订单（带状态约束，仅更新 status=1 的订单）
+     * @return 影响行数（0 表示订单已超时取消）
+     */
+    int payOrderIfPending(Orders orders);
 }

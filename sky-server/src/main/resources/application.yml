@@ -36,6 +36,12 @@ spring:
       port: ${sky.redis.port}
       password: ${sky.redis.password:}
       database: 0
+  rabbitmq:
+    host: ${sky.rabbitmq.host:localhost}
+    port: ${sky.rabbitmq.port:5672}
+    virtual-host: ${sky.rabbitmq.virtual-host:/}
+    username: ${sky.rabbitmq.username:guest}
+    password: ${sky.rabbitmq.password:guest}
   ai:
     openai:
       api-key: ${spring.ai.openai.api-key}
