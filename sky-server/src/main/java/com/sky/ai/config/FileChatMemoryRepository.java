@@ -1,6 +1,7 @@
 package com.sky.ai.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.sky.ai.config.VectorStoreConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.messages.*;
@@ -20,7 +21,7 @@ import java.util.stream.Collectors;
 @Slf4j
 public class FileChatMemoryRepository implements ChatMemoryRepository {
 
-    private static final String MEMORY_DIR = "chat-memory";
+    private static final String MEMORY_DIR = VectorStoreConfig.DATA_DIR + "/chat-memory";
     private static final int MAX_MESSAGES = 50; // 最多保留50条消息
     
     private final ObjectMapper objectMapper;

@@ -70,6 +70,8 @@ public class ReportQueryServiceImpl implements ReportQueryService {
             // 获取 AI 生成的回答
             String aiAnswer = responseSpec.content();
 
+            log.info("AI 调用完成,回复：{}",aiAnswer);
+
             long endTime = System.currentTimeMillis();
             log.info("自然语言查询完成，总耗时: {}ms", (endTime - startTime));
 

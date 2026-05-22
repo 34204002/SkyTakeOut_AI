@@ -10,6 +10,7 @@ import com.sky.ai.service.OrderRemarkService;
 import com.sky.ai.util.AiCallUtil;
 import com.sky.vo.OrderRemarkVO;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.converter.BeanOutputConverter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
@@ -79,25 +80,18 @@ public class OrderRemarkServiceImpl implements OrderRemarkService {
     }
 
     /**
-     * 使用 AI 解析备注
+     * 使用 AI 解析备注（BeanOutputConverter 保证输出格式）
      */
     private OrderRemarkVO parseByAi(String remark) {
-        // 加载 Skill 文件作为 System Prompt
         String skillContent = loadSkillContent("order-remark-parser.md");
-        
-        String prompt = skillContent + "\n\n用户备注：" + remark + "\nJSON输出：";
+
+        BeanOutputConverter<OrderRemarkVO> converter = new BeanOutputConverter<>(OrderRemarkVO.class);
+        String prompt = skillContent + "\n" + converter.getFormat() + "\n\n用户备注：" + remark;
 
         String response = aiCallUtil.callChatModel(prompt);
         log.info("AI 解析备注原始响应: {}", response);
 
-        // 清理 Markdown 格式
-        response = response.replaceAll("```json", "").replaceAll("```", "").trim();
-
-        try {
-            return objectMapper.readValue(response, OrderRemarkVO.class);
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException("AI 返回格式错误", e);
-        }
+        return converter.convert(response);
     }
 
     /**

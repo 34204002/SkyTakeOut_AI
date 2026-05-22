@@ -13,6 +13,7 @@ import com.sky.result.PageResult;
 import com.sky.vo.MarketingCaseVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -293,13 +294,14 @@ public class MarketingCopyServiceImpl implements MarketingCopyService {
                     dto.getActivityType(),
                     dto.getChannel());
 
-            // 执行向量相似度搜索
-            List<Document> results = vectorStore.similaritySearch(queryText);
-
-            // 限制返回数量
-            if (results.size() > 5) {
-                results = results.subList(0, 5);
-            }
+            // 执行向量相似度搜索（带相似度阈值）
+            List<Document> results = vectorStore.similaritySearch(
+                    SearchRequest.builder()
+                            .query(queryText)
+                            .topK(5)
+                            .similarityThreshold(0.5)
+                            .build()
+            );
 
             // 将 Document 转换为 MarketingCaseLibrary
             return results.stream().map(doc -> {

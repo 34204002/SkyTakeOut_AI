@@ -9,8 +9,10 @@ import com.sky.ai.mapper.ReviewReplyDraftMapper;
 import com.sky.ai.mapper.ReviewReplyKnowledgeMapper;
 import com.sky.ai.service.ReviewReplyService;
 import com.sky.ai.util.AiCallUtil;
+import com.sky.ai.util.AiCallUtil.ChatResult;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.document.Document;
+import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.SimpleVectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -27,9 +29,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/**
- * 评价智能回复服务实现类
- */
 @Service
 @Slf4j
 public class ReviewReplyServiceImpl implements ReviewReplyService {
@@ -45,68 +44,79 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
 
     @Autowired
     private ReviewReplyKnowledgeMapper knowledgeMapper;
-    
-    /**
-     * 差评回复专用的向量存储
-     */
+
     @Autowired
     @Qualifier("reviewVectorStore")
     private SimpleVectorStore vectorStore;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    // Skill 内容缓存，避免重复读取文件
     private final ConcurrentHashMap<String, String> skillCache = new ConcurrentHashMap<>();
 
     @Override
     public void generateReplyDraft(Long reviewId, String reviewContent, Integer rating) {
         log.info("=== 开始生成评价回复草稿，reviewId: {}, rating: {} ===", reviewId, rating);
 
+        int totalTokens = 0;
+
         try {
             // 第一步：AI 情感与意图分析
-            Map<String, String> analysisResult = analyzeReview(reviewContent, rating);
-            
-            String emotion = analysisResult.get("emotion");
-            String problemType = analysisResult.get("type");
-            String demand = analysisResult.get("demand");
+            ChatResult analysisResult = analyzeReview(reviewContent, rating);
+            totalTokens += analysisResult.getTokenUsage();
+
+            Map<String, String> analysisMap;
+            try {
+                String content = analysisResult.getContent()
+                        .replaceAll("```json", "").replaceAll("```", "").trim();
+                analysisMap = objectMapper.readValue(content, Map.class);
+            } catch (Exception e) {
+                log.warn("AI 分析结果格式异常，使用默认值", e);
+                analysisMap = new HashMap<>();
+                analysisMap.put("emotion", rating <= 2 ? "愤怒" : "中性");
+                analysisMap.put("type", "其他");
+                analysisMap.put("demand", "其他");
+            }
+
+            String emotion = analysisMap.get("emotion");
+            String problemType = analysisMap.get("type");
+            String demand = analysisMap.get("demand");
 
             log.info("AI 分析结果 - 情绪: {}, 类型: {}, 诉求: {}", emotion, problemType, demand);
 
             // 第二步：RAG 检索相似模板
             List<ReviewReplyKnowledge> templates = retrieveTemplates(problemType);
-            
-            // 第三步：AI 生成回复
-            String generatedReply = generateReply(reviewContent, emotion, problemType, demand, templates);
 
-            // 【修复】查询订单ID
+            // 第三步：AI 生成回复
+            ChatResult generateResult = generateReply(reviewContent, emotion, problemType, demand, templates);
+            totalTokens += generateResult.getTokenUsage();
+            String generatedReply = generateResult.getContent();
+
             Review review = reviewMapper.getById(reviewId);
             if (review == null) {
                 log.error("评价不存在，无法生成草稿，reviewId: {}", reviewId);
                 return;
             }
-            Long orderId = review.getOrderId();
 
             // 第四步：持久化草稿
             ReviewReplyDraft draft = new ReviewReplyDraft();
-            draft.setOrderId(orderId);  // ← 关键修复：设置 orderId
+            draft.setOrderId(review.getOrderId());
             draft.setReviewId(reviewId);
             draft.setReviewContent(reviewContent);
-            draft.setAiAnalysis(objectMapper.writeValueAsString(analysisResult));
+            draft.setAiAnalysis(objectMapper.writeValueAsString(analysisMap));
             draft.setRetrievedTemplates(objectMapper.writeValueAsString(templates));
             draft.setGeneratedReply(generatedReply);
             draft.setStatus("pending_review");
             draft.setAiModel("deepseek-ai/DeepSeek-V4-Flash");
-            draft.setTokenUsage(0);
+            draft.setTokenUsage(totalTokens);
             draft.setCreateTime(LocalDateTime.now());
 
             draftMapper.insert(draft);
-            
-            log.info("=== 评价回复草稿生成成功，draftId: {}, reviewId: {} ===", draft.getId(), reviewId);
+
+            log.info("=== 评价回复草稿生成成功，draftId: {}, reviewId: {}, tokenUsage: {} ===",
+                    draft.getId(), reviewId, totalTokens);
 
         } catch (Exception e) {
             log.error("=== 生成评价回复草稿失败，reviewId: {} ===", reviewId, e);
-            
-            // 降级策略：使用规则生成简单回复
             try {
                 generateFallbackDraft(reviewId, reviewContent, rating);
             } catch (Exception ex) {
@@ -122,17 +132,13 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
             throw new RuntimeException("草稿不存在");
         }
 
-        // 更新评价表的回复内容
-        Long reviewId = getReviewIdByDraftId(draftId);
-        reviewMapper.replyReview(reviewId, draft.getGeneratedReply(), LocalDateTime.now());
+        reviewMapper.replyReview(draft.getReviewId(), draft.getGeneratedReply(), LocalDateTime.now());
 
-        // 更新草稿状态
         draft.setStatus("approved");
         draft.setPublishTime(LocalDateTime.now());
         draftMapper.update(draft);
 
-        // 【新增】将高质量回复写入 RAG 知识库
-        addToRagLibrary(reviewId, draft.getReviewContent(), draft.getGeneratedReply());
+        addToRagLibrary(draft.getReviewId(), draft.getReviewContent(), draft.getGeneratedReply());
 
         log.info("评价回复已发布并同步至 RAG 库，draftId: {}", draftId);
     }
@@ -144,20 +150,17 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
             throw new RuntimeException("草稿不存在");
         }
 
-        // 更新草稿状态
         draft.setStatus("rejected");
         draftMapper.update(draft);
 
-        // 从 review 表查询真实的 rating
         Review review = reviewMapper.getById(draft.getReviewId());
         if (review == null) {
             log.error("评价不存在，无法重新生成，reviewId: {}", draft.getReviewId());
             return;
         }
 
-        // 重新生成
         generateReplyDraft(draft.getReviewId(), draft.getReviewContent(), review.getRating());
-        
+
         log.info("草稿已拒绝并重新生成，draftId: {}, 原因: {}", draftId, reason);
     }
 
@@ -166,13 +169,9 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
         return draftMapper.listPendingReview();
     }
 
-    /**
-     * AI 分析评价情感和意图
-     */
-    private Map<String, String> analyzeReview(String content, Integer rating) {
-        // 加载 Skill 文件
+    private ChatResult analyzeReview(String content, Integer rating) {
         String skillContent = loadSkillContent("review-reply-assistant.md");
-        
+
         String prompt = String.format(
             "%s\n\n【任务】请分析以下用户评价：\n" +
             "【评价内容】%s\n" +
@@ -182,35 +181,19 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
             skillContent, content, rating
         );
 
-        String response = aiCallUtil.callChatModel(prompt);
-        response = response.replaceAll("```json", "").replaceAll("```", "").trim();
-
-        try {
-            return objectMapper.readValue(response, Map.class);
-        } catch (Exception e) {
-            log.warn("AI 分析格式错误，使用默认值", e);
-            Map<String, String> defaultResult = new HashMap<>();
-            defaultResult.put("emotion", rating <= 2 ? "愤怒" : "中性");
-            defaultResult.put("type", "其他");
-            defaultResult.put("demand", "其他");
-            return defaultResult;
-        }
+        return aiCallUtil.callChatModelWithUsage(prompt);
     }
 
-    /**
-     * RAG 检索相似回复（基于 Simple Vector Store）
-     */
     private List<ReviewReplyKnowledge> retrieveTemplates(String problemType) {
         try {
-            // 1. 执行相似度搜索（Spring AI 会自动将字符串转为向量）
-            List<Document> results = vectorStore.similaritySearch(problemType);
-            
-            // 限制返回数量
-            if (results.size() > 3) {
-                results = results.subList(0, 3);
-            }
+            List<Document> results = vectorStore.similaritySearch(
+                    SearchRequest.builder()
+                            .query(problemType)
+                            .topK(3)
+                            .similarityThreshold(0.5)
+                            .build()
+            );
 
-            // 2. 将 Document 转换为 ReviewReplyKnowledge 对象
             return results.stream().map(doc -> {
                 ReviewReplyKnowledge k = new ReviewReplyKnowledge();
                 k.setReplyTemplate(doc.getText());
@@ -224,9 +207,6 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
         }
     }
 
-    /**
-     * 降级策略：传统 SQL 检索
-     */
     private List<ReviewReplyKnowledge> fallbackSqlRetrieve(String problemType) {
         List<ReviewReplyKnowledge> templates = knowledgeMapper.listByCategory(problemType);
         if (templates == null || templates.isEmpty()) {
@@ -235,16 +215,13 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
         return templates.stream().limit(3).toList();
     }
 
-    /**
-     * AI 生成回复
-     */
-    private String generateReply(String reviewContent, String emotion, String problemType,
-                                 String demand, List<ReviewReplyKnowledge> templates) {
-        // 加载 Skill 文件
+    private ChatResult generateReply(String reviewContent, String emotion, String problemType,
+                                     String demand, List<ReviewReplyKnowledge> templates) {
         String skillContent = loadSkillContent("review-reply-assistant.md");
-        
+
         String templateStr = templates.isEmpty() ? "无参考模板" :
-                templates.stream().map(ReviewReplyKnowledge::getReplyTemplate).reduce((a, b) -> a + "\n" + b).get();
+                templates.stream().map(ReviewReplyKnowledge::getReplyTemplate)
+                        .reduce((a, b) -> a + "\n" + b).get();
 
         String prompt = String.format(
                 "%s\n\n【任务】根据以下信息生成回复：\n" +
@@ -257,12 +234,9 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
                 skillContent, reviewContent, emotion, problemType, demand, templateStr
         );
 
-        return aiCallUtil.callChatModel(prompt);
+        return aiCallUtil.callChatModelWithUsage(prompt);
     }
 
-    /**
-     * 降级策略：规则生成简单回复
-     */
     private void generateFallbackDraft(Long reviewId, String content, Integer rating) {
         String fallbackReply;
 
@@ -274,7 +248,6 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
             fallbackReply = "感谢您的好评！我们会继续保持，期待再次为您服务～";
         }
 
-        // 【修复】降级策略也需要设置 orderId
         Review review = reviewMapper.getById(reviewId);
         if (review == null) {
             log.error("评价不存在，无法生成降级草稿，reviewId: {}", reviewId);
@@ -282,7 +255,7 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
         }
 
         ReviewReplyDraft draft = new ReviewReplyDraft();
-        draft.setOrderId(review.getOrderId());  // ← 关键修复
+        draft.setOrderId(review.getOrderId());
         draft.setReviewId(reviewId);
         draft.setReviewContent(content);
         draft.setGeneratedReply(fallbackReply);
@@ -294,35 +267,15 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
         log.info("使用降级策略生成草稿成功，reviewId: {}", reviewId);
     }
 
-    /**
-     * 根据草稿ID查询评价ID
-     */
-    private Long getReviewIdByDraftId(Long draftId) {
-        ReviewReplyDraft draft = draftMapper.getById(draftId);
-        return draft != null ? draft.getReviewId() : null;
-    }
-
-    /**
-     * 将高质量回复写入 RAG 知识库
-     */
     private void addToRagLibrary(Long reviewId, String reviewContent, String replyContent) {
         try {
-            // 1. 构造元数据
             Map<String, Object> metadata = new HashMap<>();
             metadata.put("reviewId", reviewId);
             metadata.put("type", "merchant_reply");
             metadata.put("timestamp", LocalDateTime.now().toString());
 
-            // 2. 生成向量（将评价和回复拼接）
-            String textToEmbed = reviewContent + " [回复] " + replyContent;
-
-            // 3. 创建 Document 并存入向量库
-            Document document = new Document(
-                    "reply_" + reviewId,
-                    textToEmbed,
-                    metadata
-            );
-
+            Document document = new Document("reply_" + reviewId,
+                    reviewContent + " [回复] " + replyContent, metadata);
             vectorStore.add(List.of(document));
             log.info("回复已存入 RAG 库，reviewId: {}", reviewId);
         } catch (Exception e) {
@@ -330,21 +283,14 @@ public class ReviewReplyServiceImpl implements ReviewReplyService {
         }
     }
 
-    /**
-     * 加载 Skill 文件内容（带缓存）
-     */
     private String loadSkillContent(String fileName) {
-        // 先从缓存中获取
         return skillCache.computeIfAbsent(fileName, key -> {
             try {
                 ClassPathResource resource = new ClassPathResource("ai/skills/" + key);
-                String content = StreamUtils.copyToString(resource.getInputStream(), StandardCharsets.UTF_8);
-                log.info("Skill 文件加载成功: {}, 大小: {} bytes", key, content.length());
-                return content;
+                return StreamUtils.copyToString(resource.getInputStream(), StandardCharsets.UTF_8);
             } catch (IOException e) {
                 log.error("加载 Skill 文件失败: {}", key, e);
-                // 降级：返回默认提示词
-                return "你是客服回复专家，生成专业、得体的差评回复。遵循五段式结构：称呼、共情道歉、解释解决、补偿承诺、邀请回访。";
+                return "你是客服回复专家，生成专业、得体的差评回复。";
             }
         });
     }

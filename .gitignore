@@ -8,9 +8,7 @@
 **/application-*.yaml
 **/application-*.properties
 chat-memory/
-/vector-store-marketing.json
-/vector-store-review.json
-/vector-store-customer-service.json
+/data/
 
 # 原始SQL文件包含敏感数据，不提交（使用脱敏版本）
 **/sky_take_out.sql
