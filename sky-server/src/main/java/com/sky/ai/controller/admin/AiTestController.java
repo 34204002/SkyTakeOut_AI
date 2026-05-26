@@ -1,5 +1,6 @@
 package com.sky.ai.controller.admin;
 
+import com.sky.annotation.RateLimit;
 import com.sky.context.BaseContext;
 import com.sky.dto.ai.AiChatDTO;
 import com.sky.result.Result;
@@ -35,6 +36,7 @@ public class AiTestController {
      * @return AI回复
      */
     @GetMapping("/chat")
+    @RateLimit(name = "ai-test-chat", capacity = 3, refillTokens = 3, refillSeconds = 1)
     public Result<String> chat(@RequestParam String message) {
         log.info("收到AI对话请求: {}", message);
         

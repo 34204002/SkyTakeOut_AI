@@ -1,5 +1,6 @@
 package com.sky.ai.controller.user;
 
+import com.sky.annotation.RateLimit;
 import com.sky.result.Result;
 import com.sky.ai.service.CustomerServiceBotService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -25,6 +26,7 @@ public class CustomerServiceController {
      */
     @GetMapping("/ask")
     @Operation(summary = "智能客服问答")
+    @RateLimit(name = "customer-service-ask", capacity = 5, refillTokens = 5, refillSeconds = 1)
     public Result<String> ask(@RequestParam String question) {
         log.info("用户咨询: {}", question);
         

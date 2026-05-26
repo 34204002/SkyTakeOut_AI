@@ -1,5 +1,6 @@
 package com.sky.ai.controller.admin;
 
+import com.sky.annotation.RateLimit;
 import com.sky.dto.ai.ReportQueryDTO;
 import com.sky.result.Result;
 import com.sky.vo.ReportAnswerVO;
@@ -30,6 +31,7 @@ public class ReportQueryController {
      */
     @PostMapping("/chat-query")
     @Operation(summary = "自然语言查询数据")
+    @RateLimit(name = "report-query", capacity = 3, refillTokens = 3, refillSeconds = 1)
     public Result<ReportAnswerVO> chatQuery(@RequestBody ReportQueryDTO dto) {
         if (dto == null || dto.getQuestion() == null || dto.getQuestion().trim().isEmpty()) {
             return Result.error("请输入您的问题");
